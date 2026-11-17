@@ -53,6 +53,21 @@
     frameProbs: $("frame-probs"),
     historyList: $("history-list"),
     historyEmpty: $("history-empty"),
+    diagTarget: $("diag-target"),
+    diagRun: $("diag-run"),
+    diagEmpty: $("diag-empty"),
+    diagError: $("diag-error"),
+    diagResult: $("diag-result"),
+    diagVerdict: $("diag-verdict"),
+    diagDetail: $("diag-detail"),
+    diagStale: $("diag-stale"),
+    diagBeamsWrap: $("diag-beams-wrap"),
+    diagPruneFrame: $("diag-prune-frame"),
+    diagBeamBody: $("diag-beam-body"),
+    diagBeamEmpty: $("diag-beam-empty"),
+    diagSurvivorsWrap: $("diag-survivors-wrap"),
+    diagPrevFrame: $("diag-prev-frame"),
+    diagSurvivorBody: $("diag-survivor-body"),
     busy: $("busy"),
     busyText: $("busy-text"),
   };
@@ -70,6 +85,11 @@
     // Behind the scenes: the last shown state is kept while a request is in
     // flight, so a failed operation leaves the subtitles and progress intact.
     peekLive: false,
+    // Pruning localisation: the last verdict shown, plus a sequence number.
+    // A slow response whose sequence is no longer current is dropped, so a
+    // late result can never overwrite a newer conclusion.
+    diag: null,
+    diagSeq: 0,
   };
 
   // ---------------------------------------------------------------- helpers
@@ -148,6 +168,7 @@
     els.runBtn.disabled = !ready || atEnd || state.running;
     els.restartBtn.disabled = !ready || state.running;
     els.applyPrefix.disabled = !ready;
+    els.diagRun.disabled = !ready;
     els.stopBtn.hidden = !state.running;
     els.resetBtn.disabled = !ready;
   }
@@ -193,6 +214,12 @@
     state.snapshot = null;
     state.loadedSample = sampleName;
     state.peekLive = true;
+    // A new session invalidates any diagnosis that is still in flight or on
+    // screen: bump the sequence so its late response is dropped.
+    state.diag = null;
+    state.diagSeq += 1;
+    els.diagTarget.value = "";
+    hideDiagError();
     applyState(payload, { force: true });
     if (state.snapshot) {
       els.peekFrame.value = "0";
@@ -248,6 +275,7 @@
 
     renderHistory(snap);
     renderFrameProbs(snap.frame_info);
+    renderDiag();
     els.prefixInput.placeholder = prefix ? `当前前缀：${prefix}` : "例如：啊";
     updateButtons();
     updateStatusFromSnapshot();
@@ -356,6 +384,107 @@
       cell.title = `log P = ${info.log_probs && info.log_probs[index] !== null ? Number(info.log_probs[index]).toFixed(4) : "-∞"}`;
       els.frameProbs.appendChild(cell);
     });
+  }
+
+  // ---------------------------------------------------- pruning diagnosis
+
+  function showDiagError(message) {
+    if (!message) { els.diagError.hidden = true; els.diagError.textContent = ""; }
+    else { els.diagError.hidden = false; els.diagError.textContent = message; }
+    els.diagEmpty.hidden = !els.diagError.hidden || !!state.diag;
+  }
+
+  function hideDiagError() { showDiagError(""); }
+
+  // A verdict is stale once the session moved past the frame it was computed
+  // at, the target text in the input no longer matches, or a prefix has been
+  // confirmed since.  The old conclusion stays on screen — marked, with its
+  // original frame number — instead of being silently dropped.
+  function diagIsStale() {
+    const d = state.diag;
+    const snap = state.snapshot;
+    if (!d || !snap) return false;
+    if (d.frame !== snap.next_frame) return true;
+    if (d.target !== els.diagTarget.value.trim()) return true;
+    if ((snap.prefix || "") !== "") return true;
+    return false;
+  }
+
+  function fillDiagTable(tbody, rows) {
+    tbody.innerHTML = "";
+    rows.forEach((beam, index) => {
+      const tr = document.createElement("tr");
+      const idx = document.createElement("td");
+      idx.textContent = String(index + 1);
+      const textTd = document.createElement("td");
+      const span = document.createElement("span");
+      span.className = "beam-text";
+      if (beam.text) span.textContent = beam.text;
+      else { span.className = "beam-text empty-tag"; span.textContent = "∅"; }
+      textTd.appendChild(span);
+      const logpTd = document.createElement("td");
+      logpTd.className = "num";
+      logpTd.textContent = fmt(beam.logp);
+      const probTd = document.createElement("td");
+      probTd.className = "num";
+      probTd.textContent = pct(beam.prob);
+      const blankTd = document.createElement("td");
+      blankTd.className = "num";
+      blankTd.textContent = fmt(beam.logp_blank);
+      const nbTd = document.createElement("td");
+      nbTd.className = "num";
+      nbTd.textContent = fmt(beam.logp_nonblank);
+      tr.append(idx, textTd, logpTd, probTd, blankTd, nbTd);
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderDiag() {
+    const d = state.diag;
+    els.diagResult.hidden = !d;
+    els.diagEmpty.hidden = !!d || !els.diagError.hidden;
+    if (!d) return;
+
+    const stale = diagIsStale();
+    els.diagResult.classList.toggle("stale", stale);
+    els.diagStale.hidden = !stale;
+    if (stale) {
+      const now = state.snapshot ? state.snapshot.next_frame : "?";
+      els.diagStale.textContent =
+        `已过期 · 结论基于第 ${d.frame} 帧、目标「${d.target}」（当前第 ${now} 帧）`;
+    }
+
+    els.diagBeamsWrap.hidden = true;
+    els.diagSurvivorsWrap.hidden = true;
+
+    if (d.status === "unreachable") {
+      els.diagVerdict.dataset.kind = "unreachable";
+      els.diagVerdict.textContent = "声学不可达：不是剪枝问题";
+      els.diagDetail.textContent =
+        `在已推进的 ${d.frame} 帧内，目标「${d.target}」的精确 CTC 前向概率为 -∞` +
+        "（零概率路径不算可达；连续同字必须经 blank）。声学概率本身不支持该字幕，" +
+        "调大束宽也不会让它出现。";
+    } else if (d.status === "in_beam") {
+      els.diagVerdict.dataset.kind = "in_beam";
+      els.diagVerdict.textContent = `字幕仍在束内（第 ${d.rank} 名）`;
+      els.diagDetail.textContent =
+        `第 ${d.frame} 帧、束宽 ${d.beam_width} 时，目标「${d.target}」仍在候选束中，` +
+        `log P = ${fmt(d.beam_entry.logp)}。`;
+    } else {
+      els.diagVerdict.dataset.kind = "pruned";
+      els.diagVerdict.textContent = `声学可达，但于第 ${d.prune_frame} 帧被剪枝`;
+      els.diagDetail.textContent =
+        `目标「${d.target}」完整路径的精确 log P = ${fmt(d.target_logp)}（声学支持该字幕），` +
+        `但最终束中没有。第 ${d.prune_frame} 帧是首个让所有可完成该字幕的路径都退出束的帧` +
+        `（束宽 ${d.beam_width}）；下表列出当帧保留的候选与上一帧最后仍可续写到目标的候选。`;
+      els.diagBeamsWrap.hidden = false;
+      els.diagPruneFrame.textContent = String(d.prune_frame);
+      fillDiagTable(els.diagBeamBody, d.beams || []);
+      els.diagBeamEmpty.hidden = (d.beams || []).length > 0;
+      els.diagSurvivorsWrap.hidden = false;
+      els.diagPrevFrame.textContent = String(d.prune_frame - 1);
+      fillDiagTable(els.diagSurvivorBody, d.last_completing || []);
+    }
   }
 
   // ------------------------------------------------------------- operations
@@ -470,6 +599,45 @@
     });
   }
 
+  // Pruning localisation is read-only on the server: it must not bump the
+  // revision or touch decoding progress, so the response is stored in
+  // state.diag instead of going through applyState.  Two guards keep a late
+  // response from overwriting a newer conclusion: the generation check (a
+  // new session started) and the diagnosis sequence (a newer diagnose was
+  // issued).  Once shown, a verdict is re-evaluated for staleness on every
+  // render and whenever the target text is edited.
+  async function runDiagnose() {
+    if (!state.sessionId) return;
+    const target = els.diagTarget.value.trim();
+    if (!target) {
+      showDiagError("请输入目标字幕（1～16 个词表内单字）");
+      return;
+    }
+    const sessionId = state.sessionId;
+    const generation = state.generation;
+    const seq = ++state.diagSeq;
+    await withBusy("诊断剪枝位置…", async () => {
+      try {
+        const payload = await api("/api/diagnose", {
+          method: "POST",
+          body: JSON.stringify({ session_id: sessionId, target }),
+        });
+        if (generation !== state.generation || sessionId !== state.sessionId) return;
+        if (seq !== state.diagSeq) return; // a newer diagnose superseded this one
+        state.diag = payload;
+        hideDiagError();
+        renderDiag();
+      } catch (error) {
+        if (generation !== state.generation || sessionId !== state.sessionId) return;
+        if (seq !== state.diagSeq) return;
+        // A failed diagnosis keeps the previous verdict (marked stale if the
+        // state moved on) and only adds the error message.
+        showDiagError(`诊断失败：${error.message}（解码进度与候选保持不变）`);
+        renderDiag();
+      }
+    });
+  }
+
   async function peek(frame) {
     if (!state.sessionId) return;
     try {
@@ -560,6 +728,10 @@
     state.sessionId = null;
     state.revision = -1;
     state.snapshot = null;
+    state.diag = null;
+    state.diagSeq += 1;
+    hideDiagError();
+    renderDiag();
     els.workspace.hidden = true;
     state.loadedSample = null;
     setConnection("idle", "未加载");
@@ -591,6 +763,19 @@
   });
 
   els.undoBtn.addEventListener("click", undo);
+
+  els.diagRun.addEventListener("click", runDiagnose);
+  els.diagTarget.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      runDiagnose();
+    }
+  });
+  // Editing the target text does not run a new diagnosis, but it immediately
+  // marks the on-screen verdict stale if it no longer matches the input.
+  els.diagTarget.addEventListener("input", () => {
+    if (state.diag) renderDiag();
+  });
 
   els.stepBtn.addEventListener("click", async () => {
     const snap = state.snapshot;

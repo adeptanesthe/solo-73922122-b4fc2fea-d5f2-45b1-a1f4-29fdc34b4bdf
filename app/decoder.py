@@ -268,5 +268,72 @@ def compute_prefix_alpha(frames_logp: np.ndarray, label_ids: Sequence[int]) -> n
     return alpha
 
 
+# ---------------------------------------------------------------------------
+# Backward reachability over the target trellis (for pruning localisation)
+#
+# ``completion_reachability`` answers, for every frame boundary t and every
+# CTC forward state s (same layout as ``prefix_initial_alpha``): "is there at
+# least one *positive-probability* continuation over frames[t:] that ends in
+# an accepting state?"  A beam entry at boundary t can still grow into the
+# target exactly when its (text, blank/non-blank) state is marked here and
+# the entry itself carries mass.  The trellis transitions are the only moves
+# CTC allows, so the two classic rules fall out for free:
+#
+# * a repeated label can only be produced through an intervening blank
+#   (there is no direct label-j -> label-(j+1) edge when the labels match);
+# * a zero-probability emission is never a usable edge, so "reachable" always
+#   means reachable with strictly positive probability.
+
+
+def completion_reachability(
+    frames_logp: np.ndarray, label_ids: Sequence[int]
+) -> list[np.ndarray]:
+    """Boolean backward pass mirroring :func:`prefix_step_alpha`.
+
+    Returns a list of ``T + 1`` arrays of shape ``(2L + 1,)``.  Entry ``t``
+    marks the states at boundary ``t`` from which the target can still be
+    completed with positive probability using only frames ``t .. T-1``.
+    """
+    frames = np.asarray(frames_logp, dtype=np.float64)
+    labels = [int(k) for k in label_ids]
+    label_count = len(labels)
+    if frames.ndim != 2 or frames.shape[1] < 1:
+        raise DecodeError("帧数据形状不正确")
+    if any(k < 1 or k >= frames.shape[1] for k in labels):
+        raise DecodeError("prefix 标签索引越界")
+    frame_count = frames.shape[0]
+    state_count = 2 * label_count + 1
+    positive = frames > NEG_INF  # zero probability is not a usable edge
+
+    reach: list[np.ndarray] = [
+        np.zeros(state_count, dtype=bool) for _ in range(frame_count + 1)
+    ]
+    # Accepting states at the final boundary: blank after all labels, and the
+    # last label itself (mirrors ``prefix_alpha_scores``).
+    reach[frame_count][2 * label_count] = True
+    if label_count:
+        reach[frame_count][2 * label_count - 1] = True
+
+    for t in range(frame_count - 1, -1, -1):
+        nxt = reach[t + 1]
+        cur = reach[t]
+        blank_ok = bool(positive[t, BLANK_INDEX])
+        # even state 2j: blank emitted after j labels
+        for j in range(label_count + 1):
+            ok = blank_ok and nxt[2 * j]
+            if j < label_count:
+                ok = ok or (positive[t, labels[j]] and nxt[2 * j + 1])
+            cur[2 * j] = ok
+        # odd state 2j-1: label j just emitted
+        for j in range(1, label_count + 1):
+            ok = (blank_ok and nxt[2 * j]) or (
+                positive[t, labels[j - 1]] and nxt[2 * j - 1]
+            )
+            if j < label_count and labels[j] != labels[j - 1]:
+                ok = ok or (positive[t, labels[j]] and nxt[2 * j + 1])
+            cur[2 * j - 1] = ok
+    return reach
+
+
 def finite_or_none(value: float) -> Optional[float]:
     return float(value) if math.isfinite(value) else None

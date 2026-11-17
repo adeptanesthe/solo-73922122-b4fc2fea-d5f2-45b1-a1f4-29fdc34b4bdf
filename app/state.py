@@ -35,9 +35,11 @@ from typing import Callable, Dict, List, Optional, Sequence
 import numpy as np
 
 from .decoder import (
+    NEG_INF,
     Beam,
     CTCBeamDecoder,
     DecodeError,
+    completion_reachability,
     compute_prefix_alpha,
     finite_or_none,
     prefix_alpha_scores,
@@ -50,6 +52,10 @@ class SessionError(RuntimeError):
 
 MAX_FRAMES = 2000
 MAX_EXTRA_TOKENS = 8
+# Pruning localisation is meant for short utterances: only sessions that have
+# consumed 1..64 frames and targets of at most 16 in-vocab characters.
+MAX_DIAGNOSTIC_FRAMES = 64
+MAX_TARGET_CHARS = 16
 
 
 @dataclass
@@ -436,3 +442,121 @@ def undo(session: Session) -> None:
     session.beams = beams
     session.revision += 1
     session.error = None
+
+
+# ---------------------------------------------------------------------------
+# Pruning localisation (read-only diagnosis)
+#
+# For a short unconfirmed session, ``diagnose`` answers the question "the
+# correct subtitle never entered the beam — did the acoustics simply not
+# support it, or did beam search cut the last viable path too early?"  It
+# never mutates the session: the beam search is replayed privately from the
+# initial state, so decoding progress, revision and history are untouched.
+
+
+def _entry_can_complete(beam: Beam, target: str, reach_t: np.ndarray) -> bool:
+    """Whether a beam entry still lies on a positive-probability target path.
+
+    The entry's text must be a prefix of the target, but that alone is not
+    sufficient: its blank / non-blank state must also be one from which the
+    remaining frames can still complete the target (see
+    ``completion_reachability`` — repeated labels need an intervening blank
+    and zero-probability emissions do not count).
+    """
+    if not target.startswith(beam.text):
+        return False
+    emitted = len(beam.text)
+    if beam.logp_blank != NEG_INF and reach_t[2 * emitted]:
+        return True
+    return (
+        emitted >= 1
+        and beam.logp_nonblank != NEG_INF
+        and bool(reach_t[2 * emitted - 1])
+    )
+
+
+def diagnose(session: Session, target: str) -> dict:
+    """Localise where the beam loses every path that could complete ``target``.
+
+    Returns one of three verdicts:
+
+    ``unreachable``
+        The exact CTC forward probability of the target over the consumed
+        frames is zero (log P = -inf): the acoustics themselves do not
+        support the subtitle, regardless of beam width.
+    ``in_beam``
+        The target is still in the beam at the current frame.
+    ``pruned``
+        The target is acoustically reachable but absent from the final beam.
+        ``prune_frame`` is the first frame boundary after which *no* retained
+        candidate can still complete the target; ``beams`` lists the
+        candidates the beam kept at that frame, and ``last_completing`` the
+        candidates at the previous boundary that could still reach the
+        target.
+    """
+    if not isinstance(target, str) or not target:
+        raise SessionError("目标字幕不能为空")
+    if len(target) > MAX_TARGET_CHARS:
+        raise SessionError(f"目标字幕最多 {MAX_TARGET_CHARS} 个单字")
+    if session.prefix:
+        raise SessionError("已确认前缀的会话不能诊断；请先撤销全部确认")
+    if session.next_frame < 1:
+        raise SessionError("请先推进至少 1 帧再诊断")
+    if session.next_frame > MAX_DIAGNOSTIC_FRAMES:
+        raise SessionError(
+            f"剪枝定位仅支持已推进 1～{MAX_DIAGNOSTIC_FRAMES} 帧的会话"
+        )
+    vocab_set = set(session.vocab[1:])  # blank is not a valid target character
+    foreign = [ch for ch in target if ch not in vocab_set]
+    if foreign:
+        raise SessionError(f"目标字幕包含词表外字符：{'、'.join(dict.fromkeys(foreign))}")
+
+    consumed = session.frames[: session.next_frame]
+    label_ids = [session.decoder._token_index[ch] for ch in target]
+    total, _, _ = prefix_alpha_scores(compute_prefix_alpha(consumed, label_ids))
+
+    result = {
+        "session_id": session.id,
+        "target": target,
+        "frame": session.next_frame,
+        "beam_width": session.beam_width,
+        "revision": session.revision,
+        "target_logp": finite_or_none(total),
+    }
+
+    if total == NEG_INF:
+        result["status"] = "unreachable"
+        return result
+
+    reach = completion_reachability(consumed, label_ids)
+    beams = session.decoder.initial_beams()
+    flags = [_entry_can_complete(beam, target, reach[0]) for beam in beams]
+    # ``total`` is finite, so boundary 0 always has a completable entry.
+    for boundary in range(1, session.next_frame + 1):
+        previous, previous_flags = beams, flags
+        beams = session.decoder.step(beams, session.frames[boundary - 1])
+        flags = [
+            _entry_can_complete(beam, target, reach[boundary]) for beam in beams
+        ]
+        if not any(flags):
+            result.update(
+                status="pruned",
+                prune_frame=boundary,
+                beams=[beam_to_dict(beam) for beam in beams],
+                last_completing=[
+                    beam_to_dict(beam)
+                    for beam, ok in zip(previous, previous_flags)
+                    if ok
+                ],
+            )
+            return result
+
+    # Every boundary still has a completable entry; at the final boundary that
+    # means the target text itself sits in the beam.
+    rank = next(index for index, ok in enumerate(flags) if ok)
+    result.update(
+        status="in_beam",
+        rank=rank + 1,
+        beam_entry=beam_to_dict(beams[rank]),
+    )
+    return result

@@ -68,6 +68,11 @@ class UndoBody(BaseModel):
     session_id: str
 
 
+class DiagnoseBody(BaseModel):
+    session_id: str
+    target: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 
@@ -264,6 +269,27 @@ async def confirm_endpoint(body: ConfirmBody) -> dict:
 async def undo_endpoint(body: UndoBody) -> dict:
     session = _session_or_404(body.session_id)
     return await _run_op(session, state_module.undo)
+
+
+@app.post("/api/diagnose")
+async def diagnose_endpoint(body: DiagnoseBody) -> dict:
+    """Pruning localisation for a short, unconfirmed session.
+
+    Read-only like ``peek``: it is queued on the session worker so it sees a
+    consistent snapshot, but it never advances frames, changes the prefix or
+    bumps the revision.  The response carries the frame count and target it
+    was computed for so the UI can mark the verdict stale once either moves.
+    """
+    session = _session_or_404(body.session_id)
+
+    def run(sess):
+        return state_module.diagnose(sess, body.target)
+
+    future = manager.submit(session, run)
+    try:
+        return await asyncio.wrap_future(future)
+    except SessionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -76,7 +76,15 @@ check("候选表非空", $("beam-body").children.length > 0, `${$("beam-body").c
 const firstText = $("beam-body").children[0].querySelector(".beam-text").textContent;
 check("最佳候选含字符", firstText.length > 0, firstText);
 
-// 4. confirm the best candidate
+// 4. pruning diagnosis at frame 5 (unconfirmed session, 5 frames consumed)
+$("diag-target").value = "aa";
+$("diag-run").click();
+await until(() => !$("diag-result").hidden && $("diag-verdict").textContent.length > 0, "diagnose result");
+check("诊断结论已显示", !$("diag-result").hidden, $("diag-verdict").textContent);
+check("诊断不推进帧", $("progress-text").textContent.startsWith("5 /"), $("progress-text").textContent);
+check("诊断后仍无已确认前缀", $("confirmed-text").textContent === "");
+
+// 5. confirm the best candidate
 $("confirm-best").click();
 await until(() => $("confirmed-text").textContent.length > 0, "confirm");
 const confirmed = $("confirmed-text").textContent;
@@ -85,7 +93,7 @@ check("blank 分数显示", $("ps-blank").textContent !== "—", $("ps-blank").t
 check("非 blank 分数显示", $("ps-nonblank").textContent !== "—", $("ps-nonblank").textContent);
 check("撤销按钮可用", !$("undo-btn").disabled);
 
-// 5. advance after confirmation, then undo
+// 6. advance after confirmation, then undo
 $("step-btn").click();
 await until(() => $("progress-text").textContent.startsWith("10 /"), "advance after confirm");
 $("undo-btn").click();
@@ -94,7 +102,26 @@ check("撤销后前缀清空", $("confirmed-text").textContent === "");
 check("撤销后进度保留", $("progress-text").textContent.startsWith("10 /"), $("progress-text").textContent);
 check("撤销后候选非空", $("beam-body").children.length > 0);
 
-// 6. failure keeps state: confirm text not in beam
+// 6b. the earlier diagnosis (computed at frame 5) is now stale: it stays on
+// screen, marked, with its original frame number
+check("推进后旧诊断显示过期", !$("diag-stale").hidden && $("diag-stale").textContent.includes("已过期"),
+  $("diag-stale").textContent);
+check("过期诊断标明原帧数", $("diag-stale").textContent.includes("第 5 帧"), $("diag-stale").textContent);
+
+// 6c. a fresh diagnosis at the current frame clears the stale mark; on this
+// sample "aa" is reachable but was pruned at the final frame, so both
+// diagnosis tables must be rendered
+$("diag-target").value = "aa";
+$("diag-run").click();
+await until(() => $("diag-stale").hidden && !$("diag-result").hidden, "fresh diagnose");
+check("重新诊断后过期标记消失", $("diag-stale").hidden, $("diag-verdict").textContent);
+check("剪枝结论符合样例预期", $("diag-verdict").textContent.includes("被剪枝"), $("diag-verdict").textContent);
+check("当帧保留候选表已渲染", !$("diag-beams-wrap").hidden && $("diag-beam-body").children.length > 0,
+  `${$("diag-beam-body").children.length} 行`);
+check("最后可续写候选表已渲染", !$("diag-survivors-wrap").hidden && $("diag-survivor-body").children.length > 0,
+  `${$("diag-survivor-body").children.length} 行`);
+
+// 7. failure keeps state: confirm text not in beam
 $("prefix-input").value = "zzzz";
 $("apply-prefix").click();
 await until(() => !$("op-error").hidden, "error shown");
@@ -102,14 +129,14 @@ const beforeProgress = $("progress-text").textContent;
 check("非法确认显示错误", !$("op-error").hidden, $("op-error").textContent);
 check("错误后进度不变", $("progress-text").textContent === beforeProgress, $("progress-text").textContent);
 
-// 7. historical frame inspection
+// 8. historical frame inspection
 $("peek-frame").value = "2";
 $("peek-frame").dispatchEvent(new window.Event("input"));
 await sleep(400);
 check("历史帧提示只读", $("peek-note").textContent.includes("历史回放"), $("peek-note").textContent);
 check("历史帧概率已渲染", $("frame-probs").children.length > 0);
 
-// 8. continuous run to the end
+// 9. continuous run to the end
 $("peek-frame").value = $("peek-frame").max;
 $("peek-frame").dispatchEvent(new window.Event("input"));
 $("run-btn").click();
@@ -118,7 +145,7 @@ check("连续推进到结尾", $("progress-text").textContent.startsWith("15 / 1
 await until(() => $("stop-btn").hidden, "run loop finished");
 check("运行结束停止按钮隐藏", $("stop-btn").hidden);
 
-// 9. zero-probability sample shows -∞ without NaN
+// 10. zero-probability sample shows -∞ without NaN
 const zeroBtn = [...$("sample-buttons").children].find((b) => b.textContent.includes("sparse_zero"));
 zeroBtn.click();
 await until(() => $("progress-text").textContent.startsWith("0 / 7"), "zero sample loaded");
@@ -129,7 +156,7 @@ const bodyText = $("beam-body").textContent;
 check("零概率样例无 NaN", !bodyText.includes("NaN"), bodyText.slice(0, 120));
 check("零概率样例显示 -∞", bodyText.includes("-∞") || $("frame-probs").textContent.includes("0.000"));
 
-// 10. no uncaught UI errors
+// 11. no uncaught UI errors
 check("无未捕获脚本错误", errors.length === 0, errors.join(" | ").slice(0, 200));
 
 const failed = results.filter((r) => !r.ok);

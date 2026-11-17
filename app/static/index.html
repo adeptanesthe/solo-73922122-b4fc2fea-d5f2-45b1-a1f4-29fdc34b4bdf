@@ -141,8 +141,48 @@
       </div>
     </div>
 
+    <div class="panel diagnose">
+      <div class="panel-head">
+        <h2>4. 剪枝定位</h2>
+        <span class="hint">需未确认前缀 · 已推进 1～64 帧 · 目标 ≤ 16 个词表内单字</span>
+      </div>
+      <div class="confirm-editor">
+        <label class="field grow">
+          <span>目标字幕（正确但未出现在候选束中的字幕）</span>
+          <input type="text" id="diag-target" maxlength="16" autocomplete="off" spellcheck="false" placeholder="例如：啊波">
+        </label>
+        <button class="ghost" id="diag-run">诊断</button>
+      </div>
+      <p class="empty" id="diag-empty">输入目标字幕后点击「诊断」：区分声学不可达与束搜索过早剪枝。诊断不推进帧、不改变解码状态。</p>
+      <p class="error" id="diag-error" hidden></p>
+      <div id="diag-result" hidden>
+        <p class="diag-verdict" id="diag-verdict"></p>
+        <p class="diag-detail" id="diag-detail"></p>
+        <p class="diag-stale" id="diag-stale" hidden></p>
+        <div class="diag-table-wrap" id="diag-beams-wrap" hidden>
+          <h3>第 <span class="mono" id="diag-prune-frame"></span> 帧保留的候选（该帧起所有可完成目标的路径均已退出束）</h3>
+          <table class="beam-table">
+            <thead>
+              <tr><th>#</th><th>候选字幕</th><th class="num">log P</th><th class="num">P</th><th class="num">末字 blank</th><th class="num">末字非 blank</th></tr>
+            </thead>
+            <tbody id="diag-beam-body"></tbody>
+          </table>
+          <p class="empty" id="diag-beam-empty" hidden>该帧束已为空。</p>
+        </div>
+        <div class="diag-table-wrap" id="diag-survivors-wrap" hidden>
+          <h3>上一帧（第 <span class="mono" id="diag-prev-frame"></span> 帧）中最后仍可续写到目标的候选</h3>
+          <table class="beam-table">
+            <thead>
+              <tr><th>#</th><th>候选字幕</th><th class="num">log P</th><th class="num">P</th><th class="num">末字 blank</th><th class="num">末字非 blank</th></tr>
+            </thead>
+            <tbody id="diag-survivor-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <div class="panel history">
-      <h2>4. 确认历史</h2>
+      <h2>5. 确认历史</h2>
       <ol class="history-list" id="history-list"></ol>
       <p class="empty" id="history-empty">还没有确认过前缀。</p>
     </div>

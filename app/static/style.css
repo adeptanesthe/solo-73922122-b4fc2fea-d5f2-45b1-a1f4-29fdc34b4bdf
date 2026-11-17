@@ -177,6 +177,23 @@ button.sample { padding: 5px 10px; font-size: 12px; }
 .history-list .h-prefix { font-family: var(--mono); color: var(--accent); }
 .history-list .h-meta { color: var(--muted); font-size: 12px; font-family: var(--mono); }
 
+/* ---------------------------------------------------------- pruning diagnosis */
+.diag-verdict { font-size: 14.5px; font-weight: 650; margin-top: 14px; }
+.diag-verdict[data-kind="pruned"] { color: var(--warn); }
+.diag-verdict[data-kind="unreachable"] { color: var(--danger); }
+.diag-verdict[data-kind="in_beam"] { color: var(--accent); }
+.diag-detail { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.diag-stale {
+  display: inline-block; margin-top: 10px; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid rgba(255, 201, 120, .5); color: var(--warn);
+  font-size: 12px; font-family: var(--mono);
+}
+#diag-result.stale .diag-verdict, #diag-result.stale .diag-detail,
+#diag-result.stale .diag-table-wrap { opacity: .55; }
+.diag-table-wrap { margin-top: 14px; }
+.diag-table-wrap h3 { font-size: 12.5px; color: var(--muted); font-weight: 500; margin: 0 0 8px; }
+.diag-table-wrap .beam-table td, .diag-table-wrap .beam-table th { padding: 5px 8px; }
+
 .busy {
   position: fixed; right: 22px; bottom: 22px; display: flex; align-items: center; gap: 10px;
   background: #10151b; border: 1px solid var(--line); border-radius: 999px;
